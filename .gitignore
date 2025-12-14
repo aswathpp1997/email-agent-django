@@ -1,0 +1,31 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+.pytest_cache/
+
+# Environments
+venv/
+.env
+
+# Django artifacts
+*.sqlite3
+db.sqlite3
+staticfiles/
+media/
+
+# Logs
+*.log
+
+# Packaging / builds
+build/
+dist/
+*.egg-info/
+
+# IDE / tooling
+.vscode/
+.idea/
+.DS_Store
+
+
