@@ -28,7 +28,6 @@ def _get_env(key: str) -> Optional[str]:
 
 def auth_google(_request: HttpRequest) -> HttpResponse:
     client_id = _get_env("GOOGLE_CLIENT_ID")
-    print(f"[gmail_watch] Client ID: {client_id}")
     redirect_uri = _get_env("GOOGLE_CALLBACK_URL")
     if not client_id or not redirect_uri:
         return HttpResponseBadRequest("Missing Google OAuth env configuration.")
@@ -105,7 +104,44 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
         print("[gmail_watch] Failed to decode message.data:", exc)
         return JsonResponse({"status": "decode_failed"}, status=200)
 
-    return JsonResponse({"status": "ok"})
+    # Use the historyId from the Pub/Sub payload to fetch the latest added messages
+    history_id = decoded_json.get("historyId")
+    if not history_id:
+        print("[gmail_watch] No historyId in decoded message")
+        return JsonResponse({"status": "ok", "note": "no_history_id"})
+
+    headers = _auth_headers()
+    if not headers:
+        print("[gmail_watch] Missing ACCESS_TOKEN for history fetch")
+        return JsonResponse({"status": "ok", "note": "missing_access_token"})
+
+    history_resp = _fetch_history(headers, str(history_id))
+    fetched_messages: list[Dict[str, Any]] = []
+
+    if history_resp:
+        history_entries = history_resp.get("history", [])
+        for entry in history_entries:
+            for added in entry.get("messagesAdded", []):
+                msg = added.get("message")
+                if not msg:
+                    continue
+                msg_id = msg.get("id")
+                if not msg_id:
+                    continue
+                full_msg = _fetch_message(headers, msg_id)
+                if full_msg:
+                    fetched_messages.append(full_msg)
+
+    print("[gmail_watch] Fetched messages:", fetched_messages)
+
+    return JsonResponse(
+        {
+            "status": "ok",
+            "historyId": history_id,
+            "fetched_messages": len(fetched_messages),
+            "messages": fetched_messages,
+        }
+    )
 
 
 @csrf_exempt
@@ -124,4 +160,43 @@ def pubsub_webhook(request: HttpRequest) -> HttpResponse:
 
 def hello(_request: HttpRequest) -> HttpResponse:
     return HttpResponse("Hello World from the Django server")
+
+
+def _auth_headers() -> Optional[Dict[str, str]]:
+    access_token = _get_env("ACCESS_TOKEN")
+    if not access_token:
+        return None
+    return {"Authorization": f"Bearer {access_token}"}
+
+
+def _fetch_history(headers: Dict[str, str], start_history_id: str) -> Optional[Dict[str, Any]]:
+    params = {"startHistoryId": start_history_id, "historyTypes": "messageAdded"}
+    try:
+        resp = requests.get(
+            "https://gmail.googleapis.com/gmail/v1/users/me/history",
+            headers=headers,
+            params=params,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as exc:
+        print("[gmail_watch] history call failed (webhook helper):", exc, getattr(exc, "response", None))
+        return None
+
+
+def _fetch_message(headers: Dict[str, str], message_id: str) -> Optional[Dict[str, Any]]:
+    params = {"format": "full"}
+    try:
+        resp = requests.get(
+            f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}",
+            headers=headers,
+            params=params,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as exc:
+        print("[gmail_watch] message call failed (webhook helper):", exc, getattr(exc, "response", None))
+        return None
 
