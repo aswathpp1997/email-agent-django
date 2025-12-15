@@ -1,8 +1,11 @@
 import base64
 import json
 import os
+import uuid
+import logging
 from typing import Any, Dict, Optional
 
+import boto3
 import requests
 from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest, HttpResponseRedirect, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -21,6 +24,11 @@ TOKEN_STORE: Dict[str, Any] = {}
 GITLAB_TOKEN = os.getenv("GITLAB_TOKEN")
 GITLAB_URL = os.getenv("GITLAB_URL", "https://code.qburst.com")
 PROJECT_ID = os.getenv("PROJECT_ID")
+AGENT_ID = os.getenv("AGENT_ID")
+ALIAS_ID = os.getenv("ALIAS_ID")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+
+logger = logging.getLogger(__name__)
 
 
 def _get_env(key: str) -> Optional[str]:
@@ -221,4 +229,81 @@ def _fetch_message(headers: Dict[str, str], message_id: str) -> Optional[Dict[st
     except requests.RequestException as exc:
         print("[gmail_watch] message call failed (webhook helper):", exc, getattr(exc, "response", None))
         return None
+
+
+def _bedrock_client():
+    return boto3.client("bedrock-agent-runtime", region_name=AWS_REGION)
+
+
+def _invoke_agent(agent_id: str, alias_id: str, prompt: str, session_id: str) -> str:
+    """Invoke a Bedrock Agent and collect streamed output."""
+    client = _bedrock_client()
+    response = client.invoke_agent(
+        agentId=agent_id,
+        agentAliasId=alias_id,
+        sessionId=session_id,
+        inputText=prompt,
+        enableTrace=True,
+        streamingConfigurations={
+            "applyGuardrailInterval": 20,
+            "streamFinalResponse": False
+        }
+    )
+
+    completion = ""
+    for event in response.get("completion", []):
+        if "chunk" in event:
+            chunk = event["chunk"]["bytes"].decode()
+            completion += chunk
+        if "trace" in event:
+            trace_event = event["trace"]
+            for key, value in trace_event.get("trace", {}).items():
+                logger.info("Trace %s: %s", key, value)
+
+    return completion
+
+
+@csrf_exempt
+def bedrock_sample(request: HttpRequest) -> HttpResponse:
+    """Sample GET endpoint to exercise Bedrock Agent invocation."""
+    if request.method != "GET":
+        return HttpResponseBadRequest("Use GET.")
+
+    if not AGENT_ID or not ALIAS_ID:
+        return JsonResponse({"error": "Missing AGENT_ID or ALIAS_ID env"}, status=400)
+
+    session_id = f"session-{uuid.uuid4()}"
+    message = """Subject: Issue: App crashes when uploading files
+
+Hi team,
+
+I noticed that the app crashes every time I try to upload a PDF file. The screen freezes for a few seconds and then closes completely. This started happening after the latest update.
+
+Can someone please look into this?
+
+Thanks,
+Alex"""
+    prompt = f"Process this incoming message: {message}"
+
+    try:
+        completion = _invoke_agent(
+            agent_id=AGENT_ID,
+            alias_id=ALIAS_ID,
+            prompt=prompt,
+            session_id=session_id,
+        )
+        parsed = None
+        try:
+            parsed = json.loads(completion)
+        except json.JSONDecodeError:
+            parsed = completion
+
+        return JsonResponse({
+            "sessionId": session_id,
+            "prompt": prompt,
+            "completion": parsed,
+        })
+    except Exception as exc:  # boto3 can raise various exceptions
+        logger.exception("Bedrock sample invocation failed")
+        return JsonResponse({"error": "bedrock_invoke_failed", "detail": str(exc)}, status=500)
 
