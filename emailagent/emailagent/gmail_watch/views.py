@@ -152,6 +152,9 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
 
     history_resp = _fetch_history(headers, str(history_id))
     fetched_messages: list[Dict[str, Any]] = []
+    bedrock_results: list[Dict[str, Any]] = []
+    gitlab_results: list[Dict[str, Any]] = []
+    errors: list[str] = []
 
     if history_resp:
         history_entries = history_resp.get("history", [])
@@ -167,14 +170,48 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
                 if full_msg:
                     fetched_messages.append(full_msg)
 
-    print("[gmail_watch] Fetched messages:", fetched_messages)
+    for msg in fetched_messages:
+        subject, body_text = _extract_message_text(msg)
+        email_message = f"Subject: {subject}\n\n{body_text}"
+        prompt = _build_ticket_prompt(email_message)
+
+        try:
+            completion, _raw = _invoke_agent(
+                agent_id=AGENT_ID,
+                alias_id=ALIAS_ID,
+                prompt=prompt,
+                session_id=f"session-{uuid.uuid4()}",
+            )
+            parsed = json.loads(completion)
+        except json.JSONDecodeError:
+            errors.append("bedrock_parse_failed")
+            continue
+        except Exception as exc:
+            print("[gmail_watch] Bedrock invocation failed:", exc)
+            errors.append("bedrock_invoke_failed")
+            continue
+
+        bedrock_results.append(parsed)
+
+        if parsed.get("should_create_ticket"):
+            issue = _create_gitlab_issue_from_payload(parsed)
+            if issue:
+                gitlab_results.append(issue)
+            else:
+                errors.append("gitlab_issue_failed")
+
+    print("[gmail_watch] Fetched messages:", len(fetched_messages))
+    print("[gmail_watch] Bedrock results:", bedrock_results)
+    print("[gmail_watch] GitLab created:", len(gitlab_results))
 
     return JsonResponse(
         {
             "status": "ok",
             "historyId": history_id,
             "fetched_messages": len(fetched_messages),
-            "messages": fetched_messages,
+            "bedrock_results": bedrock_results,
+            "gitlab_created": gitlab_results,
+            "errors": errors,
         }
     )
 
@@ -305,6 +342,128 @@ def _make_json_safe(obj: Any) -> Any:
 def _serialize_events(events: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
     """Prepare events for JSON serialization by decoding any bytes recursively."""
     return [_make_json_safe(ev) for ev in events]
+
+
+def _decode_b64_url(data: str) -> str:
+    """Decode base64url-encoded strings safely."""
+    try:
+        # Gmail uses URL-safe base64 without padding
+        padded = data + "=" * (-len(data) % 4)
+        return base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _extract_payload_text(payload: Dict[str, Any]) -> str:
+    """Extract text content from a Gmail message payload."""
+    if not payload:
+        return ""
+
+    body = payload.get("body", {})
+    if body and body.get("data"):
+        return _decode_b64_url(body["data"])
+
+    parts = payload.get("parts", [])
+    texts: list[str] = []
+    for part in parts:
+        mime_type = part.get("mimeType", "")
+        if mime_type.startswith("text/plain"):
+            data = part.get("body", {}).get("data")
+            if data:
+                texts.append(_decode_b64_url(data))
+        # Recurse if nested parts
+        if "parts" in part:
+            nested = _extract_payload_text(part)
+            if nested:
+                texts.append(nested)
+
+    return "\n".join(filter(None, texts))
+
+
+def _extract_message_text(message: Dict[str, Any]) -> tuple[str, str]:
+    """Return (subject, body_text or snippet) from a Gmail message."""
+    payload = message.get("payload", {})
+    headers = payload.get("headers", [])
+    subject = ""
+    for h in headers:
+        if h.get("name", "").lower() == "subject":
+            subject = h.get("value", "")
+            break
+
+    body_text = _extract_payload_text(payload)
+    if not body_text:
+        body_text = message.get("snippet", "")
+
+    return subject, body_text
+
+
+def _build_ticket_prompt(email_message: str) -> str:
+    prompt_template = textwrap.dedent(
+        """
+        Read the email subject and body. Determine if it describes a real issue that should become a GitLab ticket.
+        If yes, extract key details and generate a clear issue title, description, labels, and priority.
+        If no, return should_create_ticket=false.
+
+        Do NOT call any tools or functions. Respond only with JSON.
+
+        Guidelines:
+        - Create a ticket only if the email reports a bug, incident, access problem, performance issue, or feature request.
+        - If the email is not actionable (e.g., greetings, thanks, spam), return "should_create_ticket": false.
+        - Use short, clear titles.
+        - Include important details in the description (error messages, impact, steps, timestamps).
+        - Priority: P1 critical outage; P2 major problem; P3 normal bug/feature request; P4 low impact.
+        - Detected issue types: bug, feature_request, outage, performance, access_issue, other.
+
+        Output ONLY this JSON:
+        {
+          "should_create_ticket": true | false,
+          "issue_title": "",
+          "issue_description": "",
+          "issue_labels": [],
+          "priority": "",
+          "detected_issue_type": ""
+        }
+
+        Email message:
+        {email_message}
+        """
+    ).strip()
+    return prompt_template.replace("{email_message}", email_message)
+
+
+def _create_gitlab_issue_from_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Create a GitLab issue using parsed Bedrock output."""
+    if not GITLAB_TOKEN or not PROJECT_ID:
+        print("[gmail_watch] Missing GITLAB_TOKEN/PROJECT_ID; skipping issue creation")
+        return None
+
+    title = payload.get("issue_title") or "Untitled issue"
+    description = payload.get("issue_description") or ""
+    labels = payload.get("issue_labels") or []
+    priority = payload.get("priority")
+    if priority:
+        if isinstance(labels, list):
+            if priority not in labels:
+                labels.append(priority)
+        else:
+            labels = [priority]
+
+    url = f"{GITLAB_URL}/api/v4/projects/{PROJECT_ID}/issues"
+    headers = {"PRIVATE-TOKEN": GITLAB_TOKEN}
+    data = {
+        "title": title,
+        "description": description,
+    }
+    if labels:
+        data["labels"] = ",".join(labels)
+
+    try:
+        resp = requests.post(url, headers=headers, data=data, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException as exc:
+        print("[gmail_watch] GitLab issue creation failed:", exc, getattr(exc, "response", None))
+        return None
 
 
 @csrf_exempt
