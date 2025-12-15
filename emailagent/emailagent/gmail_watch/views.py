@@ -539,6 +539,21 @@ def create_ticket_from_entry(request: HttpRequest, entry_id: int) -> HttpRespons
 
 
 @csrf_exempt
+def decline_entry(request: HttpRequest, entry_id: int) -> HttpResponse:
+    if request.method != "POST":
+        return HttpResponseBadRequest("Use POST.")
+
+    try:
+        entry = GmailMessage.objects.get(id=entry_id)
+    except GmailMessage.DoesNotExist:
+        return JsonResponse({"error": "not_found"}, status=404)
+
+    entry.status = GmailMessage.STATUS_DECLINED
+    entry.save(update_fields=["status", "updated_at"])
+    return JsonResponse({"entry_id": entry.id, "status": entry.status})
+
+
+@csrf_exempt
 def bedrock_sample(request: HttpRequest) -> HttpResponse:
     """Sample GET endpoint to exercise Bedrock Agent invocation."""
     if request.method != "GET":

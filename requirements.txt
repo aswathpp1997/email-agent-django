@@ -10,3 +10,4 @@ requests==2.32.5
 sqlparse==0.5.4
 urllib3==2.6.2
 boto3==1.35.78
+django-cors-headers==4.6.0
