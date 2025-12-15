@@ -390,10 +390,8 @@ def bedrock_sample(request: HttpRequest) -> HttpResponse:
             parsed = completion
 
         return JsonResponse({
-            "sessionId": session_id,
-            "prompt": prompt,
+            
             "completion": parsed,
-            "rawEvents": _serialize_events(raw_events),
         })
     except Exception as exc:  # boto3 can raise various exceptions
         logger.exception("Bedrock sample invocation failed")
