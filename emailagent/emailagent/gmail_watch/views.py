@@ -10,6 +10,9 @@ import boto3
 import requests
 from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest, HttpResponseRedirect, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
+from django.db import transaction
+
+from .models import GmailMessage, GmailState
 
 GOOGLE_SCOPES = [
     "profile",
@@ -28,6 +31,7 @@ PROJECT_ID = os.getenv("PROJECT_ID")
 AGENT_ID = os.getenv("AGENT_ID")
 ALIAS_ID = os.getenv("ALIAS_ID")
 AWS_REGION = os.getenv("REGION", "us-east-1")
+START_HISTORY_ID = int(os.getenv("START_HISTORY_ID", "2377"))
 
 logger = logging.getLogger(__name__)
 
@@ -150,10 +154,15 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
         print("[gmail_watch] Missing ACCESS_TOKEN for history fetch")
         return JsonResponse({"status": "ok", "note": "missing_access_token"})
 
-    history_resp = _fetch_history(headers, str(history_id))
+    # Track latest history id in DB
+    with transaction.atomic():
+        state, _created = GmailState.objects.select_for_update().get_or_create(
+            id=1, defaults={"last_history_id": START_HISTORY_ID}
+        )
+        start_history_id = state.last_history_id or START_HISTORY_ID
+
+    history_resp = _fetch_history(headers, str(start_history_id))
     fetched_messages: list[Dict[str, Any]] = []
-    bedrock_results: list[Dict[str, Any]] = []
-    gitlab_results: list[Dict[str, Any]] = []
     errors: list[str] = []
 
     if history_resp:
@@ -170,6 +179,8 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
                 if full_msg:
                     fetched_messages.append(full_msg)
 
+    processed = 0
+    bedrock_saved: list[int] = []
     for msg in fetched_messages:
         subject, body_text = _extract_message_text(msg)
         email_message = f"Subject: {subject}\n\n{body_text}"
@@ -191,26 +202,38 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
             errors.append("bedrock_invoke_failed")
             continue
 
-        bedrock_results.append(parsed)
+        try:
+            gm = GmailMessage.objects.create(
+                history_id=history_id,
+                message_id=msg.get("id", ""),
+                subject=subject,
+                body=body_text,
+                bedrock_json=parsed,
+                status=GmailMessage.STATUS_PENDING,
+            )
+            bedrock_saved.append(gm.id)
+            processed += 1
+        except Exception as exc:
+            print("[gmail_watch] DB save failed:", exc)
+            errors.append("db_save_failed")
 
-        if parsed.get("should_create_ticket"):
-            issue = _create_gitlab_issue_from_payload(parsed)
-            if issue:
-                gitlab_results.append(issue)
-            else:
-                errors.append("gitlab_issue_failed")
+    # Update latest history id
+    with transaction.atomic():
+        state = GmailState.objects.select_for_update().get(id=1)
+        if history_id and (not state.last_history_id or int(history_id) > state.last_history_id):
+            state.last_history_id = int(history_id)
+            state.save(update_fields=["last_history_id", "updated_at"])
 
     print("[gmail_watch] Fetched messages:", len(fetched_messages))
-    print("[gmail_watch] Bedrock results:", bedrock_results)
-    print("[gmail_watch] GitLab created:", len(gitlab_results))
+    print("[gmail_watch] Saved entries:", bedrock_saved)
 
     return JsonResponse(
         {
             "status": "ok",
             "historyId": history_id,
+            "startHistoryId": start_history_id,
             "fetched_messages": len(fetched_messages),
-            "bedrock_results": bedrock_results,
-            "gitlab_created": gitlab_results,
+            "saved_entries": bedrock_saved,
             "errors": errors,
         }
     )
@@ -464,6 +487,54 @@ def _create_gitlab_issue_from_payload(payload: Dict[str, Any]) -> Optional[Dict[
     except requests.RequestException as exc:
         print("[gmail_watch] GitLab issue creation failed:", exc, getattr(exc, "response", None))
         return None
+
+
+@csrf_exempt
+def list_gmail_messages(request: HttpRequest) -> HttpResponse:
+    status = request.GET.get("status")
+    qs = GmailMessage.objects.all().order_by("-created_at")
+    if status:
+        qs = qs.filter(status=status)
+
+    data = []
+    for item in qs[:200]:
+        data.append(
+            {
+                "id": item.id,
+                "history_id": item.history_id,
+                "message_id": item.message_id,
+                "subject": item.subject,
+                "status": item.status,
+                "created_at": item.created_at,
+                "bedrock_json": item.bedrock_json,
+            }
+        )
+    return JsonResponse({"results": data})
+
+
+@csrf_exempt
+def create_ticket_from_entry(request: HttpRequest, entry_id: int) -> HttpResponse:
+    if request.method != "POST":
+        return HttpResponseBadRequest("Use POST.")
+
+    try:
+        entry = GmailMessage.objects.get(id=entry_id)
+    except GmailMessage.DoesNotExist:
+        return JsonResponse({"error": "not_found"}, status=404)
+
+    if not entry.bedrock_json:
+        return JsonResponse({"error": "no_bedrock_json"}, status=400)
+
+    if not entry.bedrock_json.get("should_create_ticket"):
+        return JsonResponse({"error": "should_create_ticket_false"}, status=400)
+
+    issue = _create_gitlab_issue_from_payload(entry.bedrock_json)
+    if issue:
+        entry.status = GmailMessage.STATUS_APPROVED
+        entry.save(update_fields=["status", "updated_at"])
+        return JsonResponse({"issue": issue, "entry_id": entry.id})
+
+    return JsonResponse({"error": "gitlab_issue_failed"}, status=500)
 
 
 @csrf_exempt

@@ -10,5 +10,7 @@ urlpatterns = [
     path("hello", views.hello, name="gmail_hello"),
     path("gitlab-issues", views.get_gitlab_issues, name="gitlab_issues"),
     path("bedrock-sample", views.bedrock_sample, name="bedrock_sample"),
+    path("gmail/messages", views.list_gmail_messages, name="gmail_messages"),
+    path("gmail/messages/<int:entry_id>/create-ticket", views.create_ticket_from_entry, name="gmail_create_ticket"),
 ]
 
