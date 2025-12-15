@@ -507,6 +507,7 @@ def list_gmail_messages(request: HttpRequest) -> HttpResponse:
                 "status": item.status,
                 "created_at": item.created_at,
                 "bedrock_json": item.bedrock_json,
+                "body": item.body,
             }
         )
     return JsonResponse({"results": data})
