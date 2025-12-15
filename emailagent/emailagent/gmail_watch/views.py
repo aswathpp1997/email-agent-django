@@ -239,8 +239,8 @@ def _bedrock_client():
     return boto3.client("bedrock-agent-runtime", region_name=AWS_REGION)
 
 
-def _invoke_agent(agent_id: str, alias_id: str, prompt: str, session_id: str) -> str:
-    """Invoke a Bedrock Agent and collect streamed output."""
+def _invoke_agent(agent_id: str, alias_id: str, prompt: str, session_id: str) -> tuple[str, list[Dict[str, Any]]]:
+    """Invoke a Bedrock Agent, collect streamed output, and capture raw events for debugging."""
     client = _bedrock_client()
     response = client.invoke_agent(
         agentId=agent_id,
@@ -255,13 +255,17 @@ def _invoke_agent(agent_id: str, alias_id: str, prompt: str, session_id: str) ->
     )
 
     completion = ""
+    raw_events: list[Dict[str, Any]] = []
     for event in response.get("completion", []):
         logger.info("[bedrock] event keys=%s", list(event.keys()))
+        print("[bedrock] event:", event)
+        raw_events.append(event)
         if "chunk" in event:
             raw = event["chunk"].get("bytes")
             if raw is not None:
                 decoded = raw.decode()
                 completion += decoded
+                print(f"[bedrock] chunk decoded len={len(decoded)} text={decoded!r}")
                 logger.info("[bedrock] chunk len=%s", len(decoded))
         if "finalResponse" in event:
             final_parts = event["finalResponse"].get("finalResponse", [])
@@ -269,13 +273,14 @@ def _invoke_agent(agent_id: str, alias_id: str, prompt: str, session_id: str) ->
                 text = part.get("text")
                 if text:
                     completion += text
+                    print(f"[bedrock] finalResponse text len={len(text)} text={text!r}")
                     logger.info("[bedrock] finalResponse text len=%s", len(text))
         if "trace" in event:
             trace_event = event["trace"]
             for key, value in trace_event.get("trace", {}).items():
                 logger.info("Trace %s: %s", key, value)
 
-    return completion
+    return completion, raw_events
 
 
 @csrf_exempt
@@ -301,7 +306,7 @@ Alex"""
     prompt = f"Process this incoming message: {message}"
 
     try:
-        completion = _invoke_agent(
+        completion, raw_events = _invoke_agent(
             agent_id=AGENT_ID,
             alias_id=ALIAS_ID,
             prompt=prompt,
@@ -319,6 +324,7 @@ Alex"""
             "sessionId": session_id,
             "prompt": prompt,
             "completion": parsed,
+            "rawEvents": raw_events,
         })
     except Exception as exc:  # boto3 can raise various exceptions
         logger.exception("Bedrock sample invocation failed")
