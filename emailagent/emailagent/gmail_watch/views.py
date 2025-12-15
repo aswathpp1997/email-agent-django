@@ -283,6 +283,22 @@ def _invoke_agent(agent_id: str, alias_id: str, prompt: str, session_id: str) ->
     return completion, raw_events
 
 
+def _make_json_safe(obj: Any) -> Any:
+    """Recursively convert bytes into utf-8 strings and leave other types intact."""
+    if isinstance(obj, (bytes, bytearray)):
+        return obj.decode(errors="replace")
+    if isinstance(obj, dict):
+        return {k: _make_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_make_json_safe(v) for v in obj]
+    return obj
+
+
+def _serialize_events(events: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    """Prepare events for JSON serialization by decoding any bytes recursively."""
+    return [_make_json_safe(ev) for ev in events]
+
+
 @csrf_exempt
 def bedrock_sample(request: HttpRequest) -> HttpResponse:
     """Sample GET endpoint to exercise Bedrock Agent invocation."""
@@ -324,7 +340,7 @@ Alex"""
             "sessionId": session_id,
             "prompt": prompt,
             "completion": parsed,
-            "rawEvents": raw_events,
+            "rawEvents": _serialize_events(raw_events),
         })
     except Exception as exc:  # boto3 can raise various exceptions
         logger.exception("Bedrock sample invocation failed")
