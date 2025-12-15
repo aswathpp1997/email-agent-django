@@ -280,6 +280,7 @@ def _auth_headers() -> Optional[Dict[str, str]]:
 
 def _fetch_history(headers: Dict[str, str], start_history_id: str) -> Optional[Dict[str, Any]]:
     params = {"startHistoryId": start_history_id, "historyTypes": "messageAdded"}
+    logger.info(f"[gmail_watch] Fetching history with params: {params}")
     try:
         resp = requests.get(
             "https://gmail.googleapis.com/gmail/v1/users/me/history",
@@ -288,6 +289,7 @@ def _fetch_history(headers: Dict[str, str], start_history_id: str) -> Optional[D
             timeout=10,
         )
         resp.raise_for_status()
+        logger.info(f"[gmail_watch] History response: {resp.json()}")
         return resp.json()
     except requests.RequestException as exc:
         print("[gmail_watch] history call failed (webhook helper):", exc, getattr(exc, "response", None))
