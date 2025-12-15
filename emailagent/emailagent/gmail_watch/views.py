@@ -250,16 +250,26 @@ def _invoke_agent(agent_id: str, alias_id: str, prompt: str, session_id: str) ->
         enableTrace=True,
         streamingConfigurations={
             "applyGuardrailInterval": 20,
-            "streamFinalResponse": False
+            "streamFinalResponse": True,
         }
     )
 
-    print("[gmail_watch] Bedrock response:", response.get("completion", []))
     completion = ""
     for event in response.get("completion", []):
+        logger.info("[bedrock] event keys=%s", list(event.keys()))
         if "chunk" in event:
-            chunk = event["chunk"]["bytes"].decode()
-            completion += chunk
+            raw = event["chunk"].get("bytes")
+            if raw is not None:
+                decoded = raw.decode()
+                completion += decoded
+                logger.info("[bedrock] chunk len=%s", len(decoded))
+        if "finalResponse" in event:
+            final_parts = event["finalResponse"].get("finalResponse", [])
+            for part in final_parts:
+                text = part.get("text")
+                if text:
+                    completion += text
+                    logger.info("[bedrock] finalResponse text len=%s", len(text))
         if "trace" in event:
             trace_event = event["trace"]
             for key, value in trace_event.get("trace", {}).items():
