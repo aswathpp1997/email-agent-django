@@ -30,6 +30,10 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 
 logger = logging.getLogger(__name__)
 
+print(f"[gmail_watch] AGENT_ID: {AGENT_ID}")
+print(f"[gmail_watch] ALIAS_ID: {ALIAS_ID}")
+print(f"[gmail_watch] AWS_REGION: {AWS_REGION}")
+
 
 def _get_env(key: str) -> Optional[str]:
     value = os.getenv(key)
