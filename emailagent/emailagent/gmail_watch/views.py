@@ -18,12 +18,34 @@ GOOGLE_SCOPES = [
 # In-memory token storage for dev/demo parity with the Node service
 TOKEN_STORE: Dict[str, Any] = {}
 
+GITLAB_TOKEN = os.getenv("GITLAB_TOKEN")
+GITLAB_URL = os.getenv("GITLAB_URL", "https://code.qburst.com")
+PROJECT_ID = os.getenv("PROJECT_ID")
+
 
 def _get_env(key: str) -> Optional[str]:
     value = os.getenv(key)
     if not value:
         print(f"[gmail_watch] Missing env var: {key}")
     return value
+
+
+@csrf_exempt
+def get_gitlab_issues(_request: HttpRequest) -> HttpResponse:
+    if not GITLAB_TOKEN or not PROJECT_ID:
+        return JsonResponse({"error": "Missing GITLAB_TOKEN or PROJECT_ID env"}, status=400)
+
+    url = f"{GITLAB_URL}/api/v4/projects/{PROJECT_ID}/issues"
+    headers = {"PRIVATE-TOKEN": GITLAB_TOKEN}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        print("[gmail_watch] GitLab issues:", data)
+        return JsonResponse(data, safe=False)
+    except requests.RequestException as exc:
+        print("[gmail_watch] GitLab issues fetch failed:", exc, getattr(exc, "response", None))
+        return JsonResponse({"error": "gitlab_issues_failed"}, status=500)
 
 
 def auth_google(_request: HttpRequest) -> HttpResponse:
