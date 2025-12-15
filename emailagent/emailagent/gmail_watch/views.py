@@ -371,7 +371,8 @@ def bedrock_sample(request: HttpRequest) -> HttpResponse:
             {email_message}
             """
         ).strip()
-        prompt = prompt_template.format(email_message=email_message)
+        # Avoid str.format conflicts with JSON braces; perform a simple replace for the placeholder.
+        prompt = prompt_template.replace("{email_message}", email_message)
 
     try:
         completion, raw_events = _invoke_agent(
