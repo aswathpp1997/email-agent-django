@@ -145,25 +145,27 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
         logger.error(f"[gmail_watch] Failed to decode message.data: {exc}")
         return JsonResponse({"status": "decode_failed"}, status=200)
 
-    # Use the historyId from the Pub/Sub payload to fetch the latest added messages
+    # Get the stored previous history_id from DB FIRST (before processing webhook)
+    with transaction.atomic():
+        state, _created = GmailState.objects.select_for_update().get_or_create(
+            id=1, defaults={"last_history_id": START_HISTORY_ID}
+        )
+        start_history_id = state.last_history_id or START_HISTORY_ID
+    
+    # Extract webhook history_id (latest from Gmail) - will update DB with this AFTER processing
     history_id = decoded_json.get("historyId")
     if not history_id:
         logger.warning("[gmail_watch] No historyId in decoded message")
         return JsonResponse({"status": "ok", "note": "no_history_id"})
+
+    logger.info(f"[gmail_watch] Fetching with stored history_id: {start_history_id} (webhook reports latest: {history_id})")
 
     headers = _auth_headers()
     if not headers:
         logger.warning("[gmail_watch] Missing ACCESS_TOKEN for history fetch")
         return JsonResponse({"status": "ok", "note": "missing_access_token"})
 
-    # Track latest history id in DB
-    with transaction.atomic():
-        state, _created = GmailState.objects.select_for_update().get_or_create(
-            id=1, defaults={"last_history_id": START_HISTORY_ID}
-        )
-        start_history_id = state.last_history_id or START_HISTORY_ID
-        logger.info(f"[gmail_watch] Using start_history_id: {start_history_id}, webhook history_id: {history_id}")
-
+    # Fetch using the PREVIOUS stored history_id, not the webhook's new history_id
     history_resp = _fetch_history(headers, str(start_history_id))
     fetched_messages: list[Dict[str, Any]] = []
     errors: list[str] = []
@@ -222,14 +224,16 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
             logger.error(f"[gmail_watch] DB save failed for message {msg.get('id')}: {exc}", exc_info=True)
             errors.append("db_save_failed")
 
-    # Update latest history id
+    # Update DB with webhook's history_id AFTER all processing is complete
     with transaction.atomic():
         state = GmailState.objects.select_for_update().get(id=1)
         if history_id and (not state.last_history_id or int(history_id) > state.last_history_id):
             old_id = state.last_history_id
             state.last_history_id = int(history_id)
             state.save(update_fields=["last_history_id", "updated_at"])
-            logger.info(f"[gmail_watch] Updated history_id from {old_id} to {history_id}")
+            logger.info(f"[gmail_watch] Updated stored history_id from {old_id} to {history_id} after processing")
+        else:
+            logger.info(f"[gmail_watch] No history_id update needed (stored: {state.last_history_id}, webhook: {history_id})")
 
     logger.info(f"[gmail_watch] Webhook processing complete - Fetched: {len(fetched_messages)}, Saved: {len(bedrock_saved)}, Errors: {len(errors)}")
     if bedrock_saved:
