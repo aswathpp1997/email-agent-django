@@ -316,17 +316,10 @@ def bedrock_sample(request: HttpRequest) -> HttpResponse:
         return JsonResponse({"error": "Missing AGENT_ID or ALIAS_ID env"}, status=400)
 
     session_id = f"session-{uuid.uuid4()}"
-    message = """Subject: Issue: App crashes when uploading files
-
-Hi team,
-
-I noticed that the app crashes every time I try to upload a PDF file. The screen freezes for a few seconds and then closes completely. This started happening after the latest update.
-
-Can someone please look into this?
-
-Thanks,
-Alex"""
-    prompt = f"Process this incoming message: {message}"
+    default_prompt = (
+        'Reply ONLY with JSON: {"echo":"hello"}'
+    )
+    prompt = request.GET.get("prompt", default_prompt)
 
     try:
         completion, raw_events = _invoke_agent(
