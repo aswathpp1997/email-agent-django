@@ -254,6 +254,7 @@ def _invoke_agent(agent_id: str, alias_id: str, prompt: str, session_id: str) ->
         }
     )
 
+    print("[gmail_watch] Bedrock response:", response.get("completion", []))
     completion = ""
     for event in response.get("completion", []):
         if "chunk" in event:
@@ -296,6 +297,8 @@ Alex"""
             prompt=prompt,
             session_id=session_id,
         )
+
+        print("[gmail_watch] Bedrock completion:", completion)
         parsed = None
         try:
             parsed = json.loads(completion)
