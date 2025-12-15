@@ -275,6 +275,13 @@ def _invoke_agent(agent_id: str, alias_id: str, prompt: str, session_id: str) ->
                     completion += text
                     print(f"[bedrock] finalResponse text len={len(text)} text={text!r}")
                     logger.info("[bedrock] finalResponse text len=%s", len(text))
+        if "outputText" in event:
+            for ot in event.get("outputText", []):
+                text = ot.get("text")
+                if text:
+                    completion += text
+                    print(f"[bedrock] outputText len={len(text)} text={text!r}")
+                    logger.info("[bedrock] outputText len=%s", len(text))
         if "trace" in event:
             trace_event = event["trace"]
             for key, value in trace_event.get("trace", {}).items():
