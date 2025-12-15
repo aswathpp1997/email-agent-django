@@ -26,7 +26,7 @@ GITLAB_URL = os.getenv("GITLAB_URL", "https://code.qburst.com")
 PROJECT_ID = os.getenv("PROJECT_ID")
 AGENT_ID = os.getenv("AGENT_ID")
 ALIAS_ID = os.getenv("ALIAS_ID")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+AWS_REGION = os.getenv("REGION", "us-east-1")
 
 logger = logging.getLogger(__name__)
 
