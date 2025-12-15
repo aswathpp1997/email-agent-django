@@ -3,6 +3,7 @@ import json
 import os
 import uuid
 import logging
+import textwrap
 from typing import Any, Dict, Optional
 
 import boto3
@@ -316,43 +317,61 @@ def bedrock_sample(request: HttpRequest) -> HttpResponse:
         return JsonResponse({"error": "Missing AGENT_ID or ALIAS_ID env"}, status=400)
 
     session_id = f"session-{uuid.uuid4()}"
-    
-    email_message = """
-    Hi team,
 
-    I noticed that the app crashes every time I try to upload a PDF file. The screen freezes for a few seconds and then closes completely. This started happening after the latest update.
+    # Allow quick prompt override for debugging
+    email_message = request.GET.get(
+        "message",
+        textwrap.dedent(
+            """
+            Subject: Issue: App crashes when uploading files
 
-    Can someone please look into this?
+            Hi team,
 
-    Thanks,
-    Alex
-    """
-    prompt = f"""Read the email subject and body. Determine if it describes a real issue that should become a GitLab ticket.
-If yes, extract key details and generate a clear issue title, description, labels, and priority.
-If no, return should_create_ticket=false.
+            I noticed that the app crashes every time I try to upload a PDF file. The screen freezes for a few seconds and then closes completely. This started happening after the latest update.
 
-Do NOT call any tools or functions. Respond only with JSON.
+            Can someone please look into this?
 
-Guidelines:
-- Create a ticket only if the email reports a bug, incident, access problem, performance issue, or feature request.
-- If the email is not actionable (e.g., greetings, thanks, spam), return "should_create_ticket": false.
-- Use short, clear titles.
-- Include important details in the description (error messages, impact, steps, timestamps).
-- Priority: P1 critical outage; P2 major problem; P3 normal bug/feature request; P4 low impact.
-- Detected issue types: bug, feature_request, outage, performance, access_issue, other.
+            Thanks,
+            Alex
+            """
+        ).strip(),
+    )
 
-Output ONLY this JSON:
-{
-  "should_create_ticket": true | false,
-  "issue_title": "",
-  "issue_description": "",
-  "issue_labels": [],
-  "priority": "",
-  "detected_issue_type": ""
-}
+    prompt_override = request.GET.get("prompt")
+    if prompt_override:
+        prompt = prompt_override
+    else:
+        prompt_template = textwrap.dedent(
+            """
+            Read the email subject and body. Determine if it describes a real issue that should become a GitLab ticket.
+            If yes, extract key details and generate a clear issue title, description, labels, and priority.
+            If no, return should_create_ticket=false.
 
-Email message:
-{email_message}"""
+            Do NOT call any tools or functions. Respond only with JSON.
+
+            Guidelines:
+            - Create a ticket only if the email reports a bug, incident, access problem, performance issue, or feature request.
+            - If the email is not actionable (e.g., greetings, thanks, spam), return "should_create_ticket": false.
+            - Use short, clear titles.
+            - Include important details in the description (error messages, impact, steps, timestamps).
+            - Priority: P1 critical outage; P2 major problem; P3 normal bug/feature request; P4 low impact.
+            - Detected issue types: bug, feature_request, outage, performance, access_issue, other.
+
+            Output ONLY this JSON:
+            {
+              "should_create_ticket": true | false,
+              "issue_title": "",
+              "issue_description": "",
+              "issue_labels": [],
+              "priority": "",
+              "detected_issue_type": ""
+            }
+
+            Email message:
+            {email_message}
+            """
+        ).strip()
+        prompt = prompt_template.format(email_message=email_message)
 
     try:
         completion, raw_events = _invoke_agent(
