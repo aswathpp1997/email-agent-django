@@ -35,15 +35,15 @@ START_HISTORY_ID = int(os.getenv("START_HISTORY_ID", "2377"))
 
 logger = logging.getLogger(__name__)
 
-print(f"[gmail_watch] AGENT_ID: {AGENT_ID}")
-print(f"[gmail_watch] ALIAS_ID: {ALIAS_ID}")
-print(f"[gmail_watch] AWS_REGION: {AWS_REGION}")
+logger.info(f"[gmail_watch] AGENT_ID: {AGENT_ID}")
+logger.info(f"[gmail_watch] ALIAS_ID: {ALIAS_ID}")
+logger.info(f"[gmail_watch] AWS_REGION: {AWS_REGION}")
 
 
 def _get_env(key: str) -> Optional[str]:
     value = os.getenv(key)
     if not value:
-        print(f"[gmail_watch] Missing env var: {key}")
+        logger.warning(f"[gmail_watch] Missing env var: {key}")
     return value
 
 
@@ -55,13 +55,15 @@ def get_gitlab_issues(_request: HttpRequest) -> HttpResponse:
     url = f"{GITLAB_URL}/api/v4/projects/{PROJECT_ID}/issues"
     headers = {"PRIVATE-TOKEN": GITLAB_TOKEN}
     try:
+        logger.info(f"[gmail_watch] Fetching GitLab issues from {url}")
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         data = response.json()
-        print("[gmail_watch] GitLab issues:", data)
+        logger.info(f"[gmail_watch] GitLab issues fetched successfully: {len(data)} issues")
         return JsonResponse(data, safe=False)
     except requests.RequestException as exc:
-        print("[gmail_watch] GitLab issues fetch failed:", exc, getattr(exc, "response", None))
+        error_detail = getattr(exc, "response", None)
+        logger.error(f"[gmail_watch] GitLab issues fetch failed: {exc}, response: {error_detail}")
         return JsonResponse({"error": "gitlab_issues_failed"}, status=500)
 
 
@@ -126,32 +128,32 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
     except json.JSONDecodeError:
         return HttpResponseBadRequest("Invalid JSON.")
 
-    print("[gmail_watch] Gmail Webhook Received")
-    print(payload)
+    logger.info("[gmail_watch] Gmail Webhook Received")
+    logger.info(f"[gmail_watch] Webhook payload: {payload}")
 
     message = payload.get("message")
     if not message or "data" not in message:
-        print("[gmail_watch] No message data found")
+        logger.warning("[gmail_watch] No message data found in webhook")
         return JsonResponse({"status": "no_message_data"}, status=200)
 
     encoded = message.get("data")
     try:
         decoded = base64.b64decode(encoded).decode("utf-8")
         decoded_json = json.loads(decoded)
-        print("[gmail_watch] Decoded Message:", decoded_json)
+        logger.info(f"[gmail_watch] Decoded Message: {decoded_json}")
     except (ValueError, json.JSONDecodeError) as exc:
-        print("[gmail_watch] Failed to decode message.data:", exc)
+        logger.error(f"[gmail_watch] Failed to decode message.data: {exc}")
         return JsonResponse({"status": "decode_failed"}, status=200)
 
     # Use the historyId from the Pub/Sub payload to fetch the latest added messages
     history_id = decoded_json.get("historyId")
     if not history_id:
-        print("[gmail_watch] No historyId in decoded message")
+        logger.warning("[gmail_watch] No historyId in decoded message")
         return JsonResponse({"status": "ok", "note": "no_history_id"})
 
     headers = _auth_headers()
     if not headers:
-        print("[gmail_watch] Missing ACCESS_TOKEN for history fetch")
+        logger.warning("[gmail_watch] Missing ACCESS_TOKEN for history fetch")
         return JsonResponse({"status": "ok", "note": "missing_access_token"})
 
     # Track latest history id in DB
@@ -160,6 +162,7 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
             id=1, defaults={"last_history_id": START_HISTORY_ID}
         )
         start_history_id = state.last_history_id or START_HISTORY_ID
+        logger.info(f"[gmail_watch] Using start_history_id: {start_history_id}, webhook history_id: {history_id}")
 
     history_resp = _fetch_history(headers, str(start_history_id))
     fetched_messages: list[Dict[str, Any]] = []
@@ -195,10 +198,11 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
             )
             parsed = json.loads(completion)
         except json.JSONDecodeError:
+            logger.error(f"[gmail_watch] Bedrock completion parse failed for message {msg.get('id')}")
             errors.append("bedrock_parse_failed")
             continue
         except Exception as exc:
-            print("[gmail_watch] Bedrock invocation failed:", exc)
+            logger.error(f"[gmail_watch] Bedrock invocation failed for message {msg.get('id')}: {exc}", exc_info=True)
             errors.append("bedrock_invoke_failed")
             continue
 
@@ -213,19 +217,25 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
             )
             bedrock_saved.append(gm.id)
             processed += 1
+            logger.info(f"[gmail_watch] Saved message {gm.message_id} (DB id: {gm.id}) with status Pending")
         except Exception as exc:
-            print("[gmail_watch] DB save failed:", exc)
+            logger.error(f"[gmail_watch] DB save failed for message {msg.get('id')}: {exc}", exc_info=True)
             errors.append("db_save_failed")
 
     # Update latest history id
     with transaction.atomic():
         state = GmailState.objects.select_for_update().get(id=1)
         if history_id and (not state.last_history_id or int(history_id) > state.last_history_id):
+            old_id = state.last_history_id
             state.last_history_id = int(history_id)
             state.save(update_fields=["last_history_id", "updated_at"])
+            logger.info(f"[gmail_watch] Updated history_id from {old_id} to {history_id}")
 
-    print("[gmail_watch] Fetched messages:", len(fetched_messages))
-    print("[gmail_watch] Saved entries:", bedrock_saved)
+    logger.info(f"[gmail_watch] Webhook processing complete - Fetched: {len(fetched_messages)}, Saved: {len(bedrock_saved)}, Errors: {len(errors)}")
+    if bedrock_saved:
+        logger.info(f"[gmail_watch] Saved entry IDs: {bedrock_saved}")
+    if errors:
+        logger.warning(f"[gmail_watch] Errors encountered: {errors}")
 
     return JsonResponse(
         {
