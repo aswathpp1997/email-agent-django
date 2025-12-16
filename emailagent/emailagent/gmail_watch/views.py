@@ -158,11 +158,11 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
         return JsonResponse({"status": "decode_failed"}, status=200)
     
     # Extract email and history ID from decoded message
-    email = decoded_json.get("email")
+    email = decoded_json.get("emailAddress")
     history_id = decoded_json.get("historyId")
     
     if not email:
-        logger.warning("[views] No email found in decoded message")
+        logger.warning("[views] No emailAddress found in decoded message")
         return JsonResponse({"status": "ok", "note": "no_email"})
     
     if not history_id:
