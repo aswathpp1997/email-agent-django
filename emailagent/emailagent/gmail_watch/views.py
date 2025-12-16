@@ -253,24 +253,34 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
             )
             continue
         
+        # Check if message already exists to avoid duplicates
+        message_id = msg.get("id", "")
         try:
-            gm = GmailMessage.objects.create(
-                history_id=history_id,
-                message_id=msg.get("id", ""),
-                subject=subject,
-                body=body_text,
-                bedrock_json=parsed,
-                status=GmailMessage.STATUS_PENDING,
+            gm, created = GmailMessage.objects.get_or_create(
+                message_id=message_id,
+                defaults={
+                    "history_id": history_id,
+                    "subject": subject,
+                    "body": body_text,
+                    "bedrock_json": parsed,
+                    "status": GmailMessage.STATUS_PENDING,
+                }
             )
-            bedrock_saved.append(gm.id)
-            processed += 1
-            logger.info(
-                f"[views] Saved message {gm.message_id} (DB id: {gm.id}) "
-                f"with status {GmailMessage.STATUS_PENDING}"
-            )
+            
+            if created:
+                bedrock_saved.append(gm.id)
+                processed += 1
+                logger.info(
+                    f"[views] Saved message {gm.message_id} (DB id: {gm.id}) "
+                    f"with status {GmailMessage.STATUS_PENDING}"
+                )
+            else:
+                logger.debug(
+                    f"[views] Message {message_id} already exists in database, skipping"
+                )
         except Exception as exc:
             logger.error(
-                f"[views] DB save failed for message {msg.get('id')}: {exc}",
+                f"[views] DB save failed for message {message_id}: {exc}",
                 exc_info=True
             )
             errors.append("db_save_failed")
