@@ -2,10 +2,11 @@
 import base64
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any, Dict, Optional
 
 import requests
+from django.utils import timezone
 
 from ..config import Config
 from ..constants import (
@@ -77,7 +78,15 @@ class GmailService:
         
         # Refresh if token expires in less than 5 minutes
         expiration_buffer = timedelta(minutes=5)
-        return datetime.now() >= (token_obj.token_expires_at - expiration_buffer)
+        now = timezone.now()
+        
+        # Ensure both datetimes are timezone-aware for comparison
+        expires_at = token_obj.token_expires_at
+        if timezone.is_naive(expires_at):
+            # If token_expires_at is naive, make it timezone-aware
+            expires_at = timezone.make_aware(expires_at)
+        
+        return now >= (expires_at - expiration_buffer)
     
     def _refresh_access_token(self, token_obj: GmailOAuthToken) -> bool:
         """
@@ -120,7 +129,7 @@ class GmailService:
             # Calculate new expiration time
             token_expires_at = None
             if expires_in:
-                token_expires_at = datetime.now() + timedelta(seconds=expires_in)
+                token_expires_at = timezone.now() + timedelta(seconds=expires_in)
             
             # Update token in database
             token_obj.access_token = new_access_token
