@@ -13,7 +13,6 @@ class Config:
     GOOGLE_CLIENT_ID: Optional[str] = None
     GOOGLE_CLIENT_SECRET: Optional[str] = None
     GOOGLE_CALLBACK_URL: Optional[str] = None
-    ACCESS_TOKEN: Optional[str] = None
     
     # GitLab
     GITLAB_TOKEN: Optional[str] = None
@@ -44,7 +43,6 @@ class Config:
         cls.GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
         cls.GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
         cls.GOOGLE_CALLBACK_URL = os.getenv("GOOGLE_CALLBACK_URL")
-        cls.ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
         
         cls.GITLAB_TOKEN = os.getenv("GITLAB_TOKEN")
         cls.GITLAB_URL = os.getenv("GITLAB_URL", cls.GITLAB_URL)

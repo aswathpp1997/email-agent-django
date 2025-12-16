@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import uuid
+from datetime import datetime, timedelta
 from typing import Any, Dict
 
 import requests
@@ -18,7 +19,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 from .config import Config
 from .constants import GOOGLE_AUTH_ENDPOINT, GOOGLE_TOKEN_ENDPOINT
-from .models import GmailMessage, GmailState
+from .models import GmailMessage, GmailOAuthToken, GmailState
 from .services import BedrockService, GitLabService, GmailService
 from .utils import build_ticket_prompt, format_email_message
 
@@ -51,10 +52,15 @@ def auth_google(_request: HttpRequest) -> HttpResponse:
 
 
 def auth_google_callback(request: HttpRequest) -> HttpResponse:
-    """Handle Google OAuth callback."""
+    """Handle Google OAuth callback and store tokens in database."""
     code = request.GET.get("code")
+    email = request.GET.get("email") or request.GET.get("state")
+    
     if not code:
         return HttpResponseBadRequest("Missing authorization code.")
+    
+    if not email:
+        return HttpResponseBadRequest("Missing email parameter.")
     
     is_valid, error_msg = Config.validate_google_oauth()
     if not is_valid:
@@ -69,15 +75,45 @@ def auth_google_callback(request: HttpRequest) -> HttpResponse:
     }
     
     try:
+        # Exchange code for tokens
         response = requests.post(GOOGLE_TOKEN_ENDPOINT, data=data, timeout=10)
         response.raise_for_status()
         tokens = response.json()
-        TOKEN_STORE["tokens"] = tokens
-        logger.info("[views] OAuth tokens stored successfully")
-        return JsonResponse({"status": "ok", "tokens": tokens})
+        
+        access_token = tokens.get("access_token")
+        refresh_token = tokens.get("refresh_token")
+        expires_in = tokens.get("expires_in")
+        
+        if not access_token:
+            return HttpResponseBadRequest("No access token in response.")
+        
+        # Calculate token expiration time
+        token_expires_at = None
+        if expires_in:
+            token_expires_at = datetime.now() + timedelta(seconds=expires_in)
+        
+        # Save or update tokens in database
+        oauth_token, created = GmailOAuthToken.objects.update_or_create(
+            email=email,
+            defaults={
+                "access_token": access_token,
+                "refresh_token": refresh_token or "",
+                "token_expires_at": token_expires_at,
+            }
+        )
+        
+        action = "created" if created else "updated"
+        logger.info(f"[views] OAuth tokens {action} for email: {email}")
+        
+        return JsonResponse({
+            "status": "ok",
+            "email": email,
+            "tokens_saved": True,
+            "action": action
+        })
     except requests.RequestException as exc:
-        logger.error(f"[views] Token exchange failed: {exc}", exc_info=True)
-        return HttpResponseBadRequest("Token exchange failed.")
+        logger.error(f"[views] OAuth callback failed: {exc}", exc_info=True)
+        return HttpResponseBadRequest(f"OAuth callback failed: {str(exc)}")
 
 
 @csrf_exempt

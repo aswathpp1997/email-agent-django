@@ -6,8 +6,8 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from ..config import Config
 from ..constants import GMAIL_HISTORY_ENDPOINT, GMAIL_MESSAGES_ENDPOINT, REQUEST_TIMEOUT
+from ..models import GmailOAuthToken
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +20,41 @@ class GmailServiceError(Exception):
 class GmailService:
     """Service for interacting with Gmail API."""
     
-    def __init__(self, access_token: Optional[str] = None):
-        """Initialize Gmail service with access token."""
-        self.access_token = access_token or Config.ACCESS_TOKEN
+    def __init__(self, email: Optional[str] = None, access_token: Optional[str] = None):
+        """
+        Initialize Gmail service with access token.
+        
+        Args:
+            email: Email address to fetch tokens from database. If None, uses first available token.
+            access_token: Direct access token (overrides database lookup if provided)
+        """
+        if access_token:
+            self.access_token = access_token
+            self.email = None
+        elif email:
+            self.email = email
+            self.access_token = self._fetch_access_token_from_db(email)
+        else:
+            # Try to get first available token
+            token_obj = GmailOAuthToken.objects.first()
+            if token_obj:
+                self.email = token_obj.email
+                self.access_token = token_obj.access_token
+            else:
+                self.email = None
+                self.access_token = None
+        
         if not self.access_token:
-            logger.warning("[GmailService] No access token provided")
+            logger.warning(f"[GmailService] No access token available for email: {email}")
+    
+    def _fetch_access_token_from_db(self, email: str) -> Optional[str]:
+        """Fetch access token from database for given email."""
+        try:
+            token_obj = GmailOAuthToken.objects.get(email=email)
+            return token_obj.access_token
+        except GmailOAuthToken.DoesNotExist:
+            logger.warning(f"[GmailService] No token found for email: {email}")
+            return None
     
     @property
     def headers(self) -> Dict[str, str]:

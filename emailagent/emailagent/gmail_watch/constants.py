@@ -16,6 +16,7 @@ GMAIL_MESSAGES_ENDPOINT = f"{GMAIL_API_BASE}/users/me/messages"
 # Google OAuth Endpoints
 GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_ENDPOINT = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 # Request Timeouts
 REQUEST_TIMEOUT = 10
