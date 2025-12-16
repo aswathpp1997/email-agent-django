@@ -173,13 +173,13 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
         f"[views] Processing webhook for email: {email}, history_id: {history_id}"
     )
     
-    # Get stored history ID
+    # Get stored history ID for this email
     with transaction.atomic():
         state, _created = GmailState.objects.select_for_update().get_or_create(
-            id=Config.GMAIL_STATE_ID,
-            defaults={"last_history_id": Config.START_HISTORY_ID}
+            email=email,
+            defaults={"last_history_id": None}
         )
-        start_history_id = state.last_history_id or Config.START_HISTORY_ID
+        start_history_id = state.last_history_id
     
     logger.info(
         f"[views] Processing webhook - stored history_id: {start_history_id}, "
@@ -198,8 +198,12 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
             "email": email
         })
     
-    # Fetch history using stored history ID
-    history_resp = gmail_service.fetch_history(str(start_history_id))
+    # Fetch history using stored history ID (skip if no history_id stored yet)
+    if not start_history_id:
+        logger.info(f"[views] No previous history_id for {email}, skipping history fetch")
+        history_resp = None
+    else:
+        history_resp = gmail_service.fetch_history(str(start_history_id))
     fetched_messages: list[Dict[str, Any]] = []
     errors: list[str] = []
     
@@ -285,20 +289,20 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
             )
             errors.append("db_save_failed")
     
-    # Update stored history ID after processing
+    # Update stored history ID after processing for this email
     with transaction.atomic():
-        state = GmailState.objects.select_for_update().get(id=Config.GMAIL_STATE_ID)
+        state = GmailState.objects.select_for_update().get(email=email)
         if history_id and (not state.last_history_id or int(history_id) > state.last_history_id):
             old_id = state.last_history_id
             state.last_history_id = int(history_id)
             state.save(update_fields=["last_history_id", "updated_at"])
             logger.info(
-                f"[views] Updated stored history_id from {old_id} to {history_id} "
+                f"[views] Updated stored history_id for {email} from {old_id} to {history_id} "
                 f"after processing"
             )
         else:
             logger.info(
-                f"[views] No history_id update needed "
+                f"[views] No history_id update needed for {email} "
                 f"(stored: {state.last_history_id}, webhook: {history_id})"
             )
     

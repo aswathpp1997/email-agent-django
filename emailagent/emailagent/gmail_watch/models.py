@@ -21,13 +21,19 @@ class GmailOAuthToken(models.Model):
 
 
 class GmailState(models.Model):
-    """Tracks the latest processed Gmail history ID."""
+    """Tracks the latest processed Gmail history ID per email."""
 
-    last_history_id = models.BigIntegerField(default=2377)
+    email = models.EmailField(primary_key=True, db_index=True)
+    last_history_id = models.BigIntegerField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        db_table = "gmail_state"
+        verbose_name = "Gmail State"
+        verbose_name_plural = "Gmail States"
+
     def __str__(self) -> str:
-        return f"GmailState(last_history_id={self.last_history_id})"
+        return f"GmailState({self.email}, last_history_id={self.last_history_id})"
 
 
 class GmailMessage(models.Model):

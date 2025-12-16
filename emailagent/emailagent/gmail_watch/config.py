@@ -24,9 +24,7 @@ class Config:
     ALIAS_ID: Optional[str] = None
     AWS_REGION: str = "us-east-1"
     
-    # Gmail
-    START_HISTORY_ID: int = 2377
-    GMAIL_STATE_ID: int = 1  # ID for singleton GmailState record
+    # Gmail (no default history ID - each email starts fresh)
     
     # Google API Scopes
     GOOGLE_SCOPES = [
@@ -51,13 +49,6 @@ class Config:
         cls.AGENT_ID = os.getenv("AGENT_ID")
         cls.ALIAS_ID = os.getenv("ALIAS_ID")
         cls.AWS_REGION = os.getenv("REGION", cls.AWS_REGION)
-        
-        start_history_id = os.getenv("START_HISTORY_ID")
-        if start_history_id:
-            try:
-                cls.START_HISTORY_ID = int(start_history_id)
-            except ValueError:
-                logger.warning(f"Invalid START_HISTORY_ID: {start_history_id}, using default")
         
         # Log important configuration
         logger.info(f"[config] AGENT_ID: {cls.AGENT_ID}")
