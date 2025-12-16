@@ -157,6 +157,22 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
         logger.error(f"[views] Failed to decode message.data: {exc}")
         return JsonResponse({"status": "decode_failed"}, status=200)
     
+    # Extract email and history ID from decoded message
+    email = decoded_json.get("email")
+    history_id = decoded_json.get("historyId")
+    
+    if not email:
+        logger.warning("[views] No email found in decoded message")
+        return JsonResponse({"status": "ok", "note": "no_email"})
+    
+    if not history_id:
+        logger.warning("[views] No historyId in decoded message")
+        return JsonResponse({"status": "ok", "note": "no_history_id"})
+    
+    logger.info(
+        f"[views] Processing webhook for email: {email}, history_id: {history_id}"
+    )
+    
     # Get stored history ID
     with transaction.atomic():
         state, _created = GmailState.objects.select_for_update().get_or_create(
@@ -165,24 +181,22 @@ def gmail_webhook(request: HttpRequest) -> HttpResponse:
         )
         start_history_id = state.last_history_id or Config.START_HISTORY_ID
     
-    # Extract webhook history ID
-    history_id = decoded_json.get("historyId")
-    if not history_id:
-        logger.warning("[views] No historyId in decoded message")
-        return JsonResponse({"status": "ok", "note": "no_history_id"})
-    
     logger.info(
         f"[views] Processing webhook - stored history_id: {start_history_id}, "
         f"webhook history_id: {history_id}"
     )
     
-    # Initialize services
-    gmail_service = GmailService()
+    # Initialize services with email-specific token
+    gmail_service = GmailService(email=email)
     bedrock_service = BedrockService()
     
     if not gmail_service.access_token:
-        logger.warning("[views] Missing ACCESS_TOKEN for history fetch")
-        return JsonResponse({"status": "ok", "note": "missing_access_token"})
+        logger.warning(f"[views] Missing access token for email: {email}")
+        return JsonResponse({
+            "status": "ok",
+            "note": "missing_access_token",
+            "email": email
+        })
     
     # Fetch history using stored history ID
     history_resp = gmail_service.fetch_history(str(start_history_id))
