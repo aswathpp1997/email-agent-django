@@ -18,7 +18,11 @@ from django.http import (
 from django.views.decorators.csrf import csrf_exempt
 
 from .config import Config
-from .constants import GOOGLE_AUTH_ENDPOINT, GOOGLE_TOKEN_ENDPOINT
+from .constants import (
+    GOOGLE_AUTH_ENDPOINT,
+    GOOGLE_TOKEN_ENDPOINT,
+    GOOGLE_USERINFO_ENDPOINT,
+)
 from .models import GmailMessage, GmailOAuthToken, GmailState
 from .services import BedrockService, GitLabService, GmailService
 from .utils import build_ticket_prompt, format_email_message
@@ -54,13 +58,8 @@ def auth_google(_request: HttpRequest) -> HttpResponse:
 def auth_google_callback(request: HttpRequest) -> HttpResponse:
     """Handle Google OAuth callback and store tokens in database."""
     code = request.GET.get("code")
-    email = request.GET.get("email") or request.GET.get("state")
-    
     if not code:
         return HttpResponseBadRequest("Missing authorization code.")
-    
-    if not email:
-        return HttpResponseBadRequest("Missing email parameter.")
     
     is_valid, error_msg = Config.validate_google_oauth()
     if not is_valid:
@@ -86,6 +85,19 @@ def auth_google_callback(request: HttpRequest) -> HttpResponse:
         
         if not access_token:
             return HttpResponseBadRequest("No access token in response.")
+        
+        # Fetch user email using access token
+        userinfo_response = requests.get(
+            GOOGLE_USERINFO_ENDPOINT,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10
+        )
+        userinfo_response.raise_for_status()
+        userinfo = userinfo_response.json()
+        email = userinfo.get("email")
+        
+        if not email:
+            return HttpResponseBadRequest("No email found in userinfo response.")
         
         # Calculate token expiration time
         token_expires_at = None
